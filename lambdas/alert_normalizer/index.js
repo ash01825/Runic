@@ -1,15 +1,17 @@
 const AWS = require('aws-sdk');
 const sqs = new AWS.SQS();
 
-const QUEUE_URL = process.env.QUEUE_URL; // set via environment variable in CDK
+// Set by the deployment environment (e.g. CDK)
+const QUEUE_URL = process.env.QUEUE_URL;
 
 exports.handler = async (event) => {
     try {
         console.log("Received event:", JSON.stringify(event));
 
+        // Support both direct invocation and HTTP-based (API Gateway) events
         const body = event.body ? JSON.parse(event.body) : event;
 
-        // Simple normalization logic
+        // Normalize the incoming payload
         const normalized = {
             incidentId: body.id || `incident-${Date.now()}`,
             source: body.source || 'unknown',
@@ -23,6 +25,7 @@ exports.handler = async (event) => {
             MessageBody: JSON.stringify(normalized)
         };
 
+        console.log(`Sending normalized message to ${QUEUE_URL}`);
         await sqs.sendMessage(sqsParams).promise();
 
         return {
