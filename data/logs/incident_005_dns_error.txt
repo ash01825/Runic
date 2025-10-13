@@ -1,0 +1,9 @@
+Application startup failed for service: frontend-ui
+Timestamp: 2025-10-14T04:35:00Z
+Error: Could not establish connection to backend service.
+
+Caused by: java.net.UnknownHostException: payment-gateway.internal.opsflow.local: Temporary failure in name resolution
+    at java.net.Inet4AddressImpl.lookupAllHostAddr(Native Method)
+    at java.net.InetAddress$2.lookupAllHostAddr(InetAddress.java:928)
+    at java.net.InetAddress.getAddressesFromNameService(InetAddress.java:1323)
+    at java.net.InetAddress.getAllByName0(InetAddress.java:1276)

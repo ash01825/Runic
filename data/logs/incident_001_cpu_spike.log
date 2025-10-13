@@ -1,0 +1,1 @@
+[ERROR] timestamp=1728879963 service=auth-service msg="High resource warning; triggering ResourceExhaustion event" cpu_utilization=94.3% p99_latency_ms=2100 task_id=b4a2e1f-8c7d error="Request processing time exceeded 5000ms"

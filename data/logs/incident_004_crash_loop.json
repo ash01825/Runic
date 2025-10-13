@@ -1,0 +1,16 @@
+{
+  "alertName": "ServiceUnhealthy",
+  "source": "ECS",
+  "severity": "CRITICAL",
+  "timestamp": "2025-10-14T04:32:45Z",
+  "eventType": "ServiceDown",
+  "serviceName": "search-engine",
+  "clusterName": "opsflow-prod-cluster",
+  "reason": "Service has been restarting continuously.",
+  "details": {
+    "taskDefinition": "search-engine:v1.2.1",
+    "restartCount": 6,
+    "timeWindowMinutes": 10,
+    "lastError": "Container health check failed"
+  }
+}

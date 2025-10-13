@@ -1,0 +1,1 @@
+[WARN] timestamp=1728879975 service=payment-gateway msg="High DB query latency detected" eventType=LatencySpike dependency=inventory-db p99_latency_ms=2105 threshold_ms=1000 query_signature="SELECT * FROM products WHERE..."
