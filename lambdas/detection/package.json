@@ -1,0 +1,11 @@
+{
+  "name": "detection-lambda",
+  "version": "1.0.0",
+  "description": "Lambda for anomaly detection.",
+  "main": "index.js",
+  "type": "module",
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.525.0",
+    "@aws-sdk/lib-dynamodb": "^3.525.0"
+  }
+}

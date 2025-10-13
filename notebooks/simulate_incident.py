@@ -1,5 +1,3 @@
-# notebooks/simulate_incident.py
-
 import json
 import random
 import time
@@ -7,10 +5,11 @@ import uuid
 import requests
 import argparse
 
-# Replace with your API Gateway endpoint from CDK deployment
+# Make sure to update this with your API Gateway endpoint URL from the `cdk deploy` output
 API_GATEWAY_URL = "https://9e1sqol6ki.execute-api.ap-south-1.amazonaws.com/prod/alerts"
 
 # Set to True to use direct Lambda invocation (requires AWS credentials)
+# NOTE: This will bypass your API Gateway and SQS queue for testing the normalizer directly.
 USE_LAMBDA_INVOKE = False
 LAMBDA_FUNCTION_NAME = "opsflow-alert-normalizer"
 
@@ -19,10 +18,10 @@ if USE_LAMBDA_INVOKE:
     import boto3
     lambda_client = boto3.client('lambda')
 
-
 def generate_incident():
     """
     Generate a synthetic incident with random but realistic values.
+    It now includes a top-level 'metricValue' for the detection lambda.
     """
     incident_id = str(uuid.uuid4())
     now = int(time.time())
@@ -31,21 +30,25 @@ def generate_incident():
     severity_levels = ["INFO", "WARN", "ERROR", "CRITICAL"]
     event_types = ["LatencySpike", "ErrorRateIncrease", "Timeouts", "ResourceExhaustion", "ServiceDown"]
 
+    # Generate a random CPU value to use for our detection metric
+    cpu_usage = round(random.uniform(10, 99), 2)
+
     return {
         "incidentId": incident_id,
         "timestamp": now,
         "service": random.choice(services),
         "severity": random.choices(severity_levels, weights=[10, 30, 40, 20])[0],
         "eventType": random.choice(event_types),
+        # This top-level field is added to be compatible with your detection lambda
+        "metricValue": str(cpu_usage),
         "metrics": {
             "errorRate": round(random.uniform(0, 0.5), 3),
             "latencyMs": random.randint(50, 1500),
-            "cpuUsagePercent": round(random.uniform(10, 90), 2),
+            "cpuUsagePercent": cpu_usage,
             "memoryUsagePercent": round(random.uniform(10, 90), 2)
         },
         "message": "Synthetic alert generated for testing OpsFlow pipeline"
     }
-
 
 def send_incident_to_api(incident):
     """
@@ -62,7 +65,6 @@ def send_incident_to_api(incident):
     except requests.exceptions.RequestException as e:
         print(f"[!] HTTP error: {e}")
         print("[!] Check that the API_GATEWAY_URL is correct and the API is reachable.")
-
 
 def invoke_lambda_directly(incident):
     """
@@ -84,7 +86,6 @@ def invoke_lambda_directly(incident):
             print(f"[!] Lambda returned status {status_code}. Response: {response_payload}")
     except Exception as e:
         print(f"[!] Lambda invocation failed: {e}")
-
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Synthetic incident generator for OpsFlow")
@@ -113,3 +114,4 @@ if __name__ == "__main__":
             time.sleep(args.delay)
 
     print("--- Simulation Complete ---")
+
