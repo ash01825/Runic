@@ -67,6 +67,23 @@ export class InfraStack extends cdk.Stack {
         const alerts = api.root.addResource('alerts');
         alerts.addMethod('POST');
 
+        // NEW: Define the detection Lambda function
+        const detectionLambda = new NodejsFunction(this, 'DetectionFunction', {
+            functionName: 'opsflow-detection',
+            runtime: lambda.Runtime.NODEJS_18_X,
+            handler: 'handler',
+            entry: path.join(__dirname, '../../lambdas/detection/index.js'),
+            projectRoot: path.join(__dirname, '../../'),
+            depsLockFilePath: path.join(__dirname, '../../package-lock.json'),
+            environment: {
+                TABLE_NAME: incidentTable.tableName,
+            },
+            timeout: cdk.Duration.seconds(30),
+        });
+
+        // NEW: Grant the detection Lambda permission to write to the DynamoDB table
+        incidentTable.grantWriteData(detectionLambda);
+
         // Lambda to process messages from SQS and write to DynamoDB
         const ingestProcessorLambda = new NodejsFunction(this, 'IngestProcessorFunction', {
             functionName: 'opsflow-ingest-processor',
@@ -77,12 +94,17 @@ export class InfraStack extends cdk.Stack {
             depsLockFilePath: path.join(__dirname, '../../package-lock.json'),
             environment: {
                 TABLE_NAME: incidentTable.tableName,
+                // NEW: Pass the detection Lambda's name as an environment variable
+                DETECTION_LAMBDA_NAME: detectionLambda.functionName,
             },
             timeout: cdk.Duration.seconds(30),
         });
 
         incidentTable.grantWriteData(ingestProcessorLambda);
         ingestProcessorLambda.addEventSource(new SqsEventSource(opsQueue));
+
+        // NEW: Grant the ingest processor permission to invoke the detection Lambda
+        detectionLambda.grantInvoke(ingestProcessorLambda);
 
         // Outputs for reference after deployment
         new cdk.CfnOutput(this, 'S3BucketName', { value: artifactBucket.bucketName });
@@ -91,6 +113,8 @@ export class InfraStack extends cdk.Stack {
         new cdk.CfnOutput(this, 'SqsQueueUrl', { value: opsQueue.queueUrl });
         new cdk.CfnOutput(this, 'AlertNormalizerLambda', { value: alertNormalizerLambda.functionName });
         new cdk.CfnOutput(this, 'IngestProcessorLambda', { value: ingestProcessorLambda.functionName });
+        // NEW: Add an output for the new detection lambda
+        new cdk.CfnOutput(this, 'DetectionLambda', { value: detectionLambda.functionName });
         new cdk.CfnOutput(this, 'ApiGatewayUrl', {
             value: api.url,
             description: 'The base URL of the API Gateway. Use this URL + /alerts in your script.'
