@@ -31,7 +31,7 @@ def generate_incident():
     event_types = ["LatencySpike", "ErrorRateIncrease", "Timeouts", "ResourceExhaustion", "ServiceDown"]
 
     # Generate a random CPU value to use for our detection metric
-    cpu_usage = round(random.uniform(10, 99), 2)
+    cpu_usage = 110.0
 
     return {
         "incidentId": incident_id,
