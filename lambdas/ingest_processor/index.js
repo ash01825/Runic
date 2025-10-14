@@ -1,17 +1,15 @@
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, PutCommand } from "@aws-sdk/lib-dynamodb";
 import { log, getCurrentISOTime } from "./utils.js";
-// MODIFIED: Import the Lambda client and InvokeCommand
 import { LambdaClient, InvokeCommand } from "@aws-sdk/client-lambda";
 
 const REGION = process.env.AWS_REGION;
 const TABLE_NAME = process.env.TABLE_NAME;
-// MODIFIED: Get the detection lambda name from environment variables
 const DETECTION_LAMBDA_NAME = process.env.DETECTION_LAMBDA_NAME;
+const RETRIEVER_LAMBDA_NAME = process.env.RETRIEVER_LAMBDA_NAME;
 
 const ddbClient = new DynamoDBClient({ region: REGION });
 const docClient = DynamoDBDocumentClient.from(ddbClient);
-// MODIFIED: Create a new Lambda client
 const lambdaClient = new LambdaClient({ region: REGION });
 
 /**
@@ -33,6 +31,7 @@ export const handler = async (event) => {
                 status: "RECEIVED",
                 anomalyScore: null,
                 isAnomaly: false,
+                retrievedContext: null,
                 plan: null,
                 resolution: null
             };
@@ -44,16 +43,32 @@ export const handler = async (event) => {
 
             log("Incident ingested", { incidentId: enrichedIncident.incidentId });
 
-            // MODIFIED: After successfully ingesting, invoke the detection Lambda asynchronously
+            const downstreamTasks = [];
+
             if (DETECTION_LAMBDA_NAME) {
                 const invokeParams = {
                     FunctionName: DETECTION_LAMBDA_NAME,
-                    InvocationType: 'Event', // Asynchronous invocation
+                    InvocationType: 'Event',
                     Payload: JSON.stringify(enrichedIncident),
                 };
+                downstreamTasks.push(lambdaClient.send(new InvokeCommand(invokeParams)));
+            }
 
-                await lambdaClient.send(new InvokeCommand(invokeParams));
-                log("Triggered detection lambda", { incidentId: enrichedIncident.incidentId });
+            if (RETRIEVER_LAMBDA_NAME) {
+                const invokeParams = {
+                    FunctionName: RETRIEVER_LAMBDA_NAME,
+                    InvocationType: 'Event',
+                    Payload: JSON.stringify(enrichedIncident),
+                };
+                downstreamTasks.push(lambdaClient.send(new InvokeCommand(invokeParams)));
+            }
+
+            if (downstreamTasks.length > 0) {
+                await Promise.all(downstreamTasks);
+                log("Triggered downstream processing", {
+                    incidentId: enrichedIncident.incidentId,
+                    tasksTriggered: downstreamTasks.length
+                });
             }
 
         } catch (error) {
@@ -64,3 +79,4 @@ export const handler = async (event) => {
         }
     }
 };
+
