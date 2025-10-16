@@ -1,7 +1,8 @@
 # High CPU Restart Procedure
 
 ## 🔍 Incident Symptoms
-- An incident is flagged as an anomaly with a score of **1.0**, indicating a `metricValue` (CPU Usage) of **> 90%**.
+- An incident is flagged as an anomaly with a score of **1.0 or higher**.
+- The `metricValue` (CPU Usage) is **> 90%**.
 - The `eventType` in the alert payload is `ResourceExhaustion`.
 - The `service` field identifies a specific component, like `auth-service`, as the source.
 - P99 latency for the service is significantly elevated.

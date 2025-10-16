@@ -4,73 +4,127 @@ import time
 import uuid
 import requests
 import argparse
+import boto3
 
-# Make sure to update this with your API Gateway endpoint URL from the `cdk deploy` output
+# ==============================================================================
+# ⚙️ CONFIGURATION - UPDATE THIS SECTION
+# ==============================================================================
+
+# 1. Paste your API Gateway endpoint URL from the `cdk deploy` output.
 API_GATEWAY_URL = "https://9e1sqol6ki.execute-api.ap-south-1.amazonaws.com/prod/alerts"
 
-# Set to True to use direct Lambda invocation (requires AWS credentials)
-# NOTE: This will bypass your API Gateway and SQS queue for testing the normalizer directly.
+# 2. (Optional) Set to True to bypass the API and invoke the normalizer Lambda directly.
 USE_LAMBDA_INVOKE = False
 LAMBDA_FUNCTION_NAME = "opsflow-alert-normalizer"
 
-lambda_client = None
-if USE_LAMBDA_INVOKE:
-    import boto3
-    lambda_client = boto3.client('lambda')
+# ==============================================================================
+# INCIDENT GENERATOR FUNCTIONS
+# ==============================================================================
 
-def generate_incident():
-    """
-    Generate a synthetic incident with random but realistic values.
-    It now includes a top-level 'metricValue' for the detection lambda.
-    """
-    incident_id = str(uuid.uuid4())
-    now = int(time.time())
-
-    services = ["auth-service", "payment-gateway", "search-engine", "inventory-db", "frontend-ui"]
-    severity_levels = ["INFO", "WARN", "ERROR", "CRITICAL"]
-    event_types = ["LatencySpike", "ErrorRateIncrease", "Timeouts", "ResourceExhaustion", "ServiceDown"]
-
-    # Generate a random CPU value to use for our detection metric
-    cpu_usage = 110.0
-
+def generate_cpu_spike_incident():
+    """Generates a structured log for a high CPU event."""
     return {
-        "incidentId": incident_id,
-        "timestamp": now,
-        "service": random.choice(services),
-        "severity": random.choices(severity_levels, weights=[10, 30, 40, 20])[0],
-        "eventType": random.choice(event_types),
-        # This top-level field is added to be compatible with your detection lambda
-        "metricValue": str(cpu_usage),
-        "metrics": {
-            "errorRate": round(random.uniform(0, 0.5), 3),
-            "latencyMs": random.randint(50, 1500),
-            "cpuUsagePercent": cpu_usage,
-            "memoryUsagePercent": round(random.uniform(10, 90), 2)
-        },
-        "message": "Synthetic alert generated for testing OpsFlow pipeline"
+        # --- FIXED: Standardized timestamp to ISO 8601 format ---
+        "timestamp": time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+        "service": "auth-service",
+        "level": "ERROR",
+        "msg": "High resource warning; triggering ResourceExhaustion event",
+        "eventType": "ResourceExhaustion",
+        "details": {
+            "cpu_utilization_percent": round(random.uniform(92.0, 99.5), 2),
+            "p99_latency_ms": random.randint(2100, 3500),
+            "task_id": str(uuid.uuid4())
+        }
     }
 
+def generate_crash_loop_incident():
+    """Generates a structured log for a service in a crash loop."""
+    return {
+        "alertName": "ServiceUnhealthy",
+        "source": "ECS",
+        "severity": "CRITICAL",
+        "timestamp": time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+        "eventType": "ServiceDown",
+        "serviceName": "search-engine",
+        "reason": "Service has been restarting continuously.",
+        "details": {
+            "restartCount": random.randint(6, 15),
+            "timeWindowMinutes": 10,
+            "lastError": "Container health check failed"
+        }
+    }
+
+def generate_api_error_incident():
+    """Generates a structured log for a 5xx error from API Gateway."""
+    return {
+        "timestamp": time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+        "service": "api-gateway",
+        "level": "ERROR",
+        "msg": "Backend integration timed out",
+        "eventType": "ApiError",
+        "details": {
+            "endpoint": "/v1/checkout",
+            "httpStatus": 504,
+            "integrationLatency": random.randint(29000, 31000)
+        }
+    }
+
+def generate_db_latency_incident():
+    """Generates a structured log for high database latency."""
+    return {
+        "timestamp": time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+        "service": "payment-gateway",
+        "level": "WARN",
+        "msg": "High DB query latency detected",
+        "eventType": "LatencySpike",
+        "details": {
+            "dependency": "inventory-db",
+            "p99_latency_ms": random.randint(1500, 3000),
+            "threshold_ms": 1000,
+        }
+    }
+
+def generate_dns_error_incident():
+    """Generates a structured log for a DNS resolution failure."""
+    return {
+        "timestamp": time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+        "service": "frontend-ui",
+        "level": "ERROR",
+        "msg": "Application startup failed due to DNS resolution failure",
+        "eventType": "Timeouts",
+        "details": {
+            "error": "Could not establish connection to backend service.",
+            "stackTrace": "java.net.UnknownHostException: payment-gateway.internal.opsflow.local: Temporary failure in name resolution"
+        }
+    }
+
+# List of all our generator functions
+incident_generators = [
+    generate_cpu_spike_incident,
+    generate_crash_loop_incident,
+    generate_api_error_incident,
+    generate_db_latency_incident,
+    generate_dns_error_incident
+]
+
 def send_incident_to_api(incident):
-    """
-    Send the incident to the API Gateway endpoint via HTTP POST.
-    """
-    print(f"Sending incident {incident['incidentId']} to {API_GATEWAY_URL}...")
+    """Sends the incident to the API Gateway endpoint via HTTP POST."""
+    incident_id = incident.get("incidentId", str(uuid.uuid4()))
+    print(f"Sending incident {incident_id} ({incident.get('eventType')}) to API Gateway...")
     headers = {"Content-Type": "application/json"}
     try:
         resp = requests.post(API_GATEWAY_URL, data=json.dumps(incident), headers=headers, timeout=10)
         if resp.status_code == 200:
-            print(f"[+] Incident {incident['incidentId']} sent successfully. Response: {resp.json()}")
+            print(f"  [✅] Success! Response: {resp.json()}")
         else:
-            print(f"[!] Failed to send incident {incident['incidentId']} (Status: {resp.status_code}). Response: {resp.text}")
+            print(f"  [❌] Failed (Status: {resp.status_code}). Response: {resp.text}")
     except requests.exceptions.RequestException as e:
-        print(f"[!] HTTP error: {e}")
-        print("[!] Check that the API_GATEWAY_URL is correct and the API is reachable.")
+        print(f"  [❌] HTTP error: {e}")
 
-def invoke_lambda_directly(incident):
-    """
-    Call the Lambda function directly using boto3.
-    """
-    print(f"Invoking Lambda '{LAMBDA_FUNCTION_NAME}' for incident {incident['incidentId']}...")
+def invoke_lambda_directly(incident, lambda_client):
+    """Calls the Lambda function directly using boto3."""
+    incident_id = incident.get("incidentId", str(uuid.uuid4()))
+    print(f"Invoking Lambda '{LAMBDA_FUNCTION_NAME}' for incident {incident_id}...")
     try:
         resp = lambda_client.invoke(
             FunctionName=LAMBDA_FUNCTION_NAME,
@@ -79,39 +133,41 @@ def invoke_lambda_directly(incident):
         )
         status_code = resp['StatusCode']
         response_payload = json.loads(resp['Payload'].read())
-
-        if status_code == 200:
-            print(f"[+] Lambda response: {response_payload}")
+        if 200 <= status_code < 300:
+            print(f"  [✅] Lambda invocation successful. Response: {response_payload}")
         else:
-            print(f"[!] Lambda returned status {status_code}. Response: {response_payload}")
+            print(f"  [❌] Lambda returned status {status_code}. Response: {response_payload}")
     except Exception as e:
-        print(f"[!] Lambda invocation failed: {e}")
+        print(f"  [❌] Lambda invocation failed: {e}")
+
+# ==============================================================================
+# MAIN EXECUTION
+# ==============================================================================
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Synthetic incident generator for OpsFlow")
     parser.add_argument("--count", type=int, default=5, help="Number of incidents to send")
-    parser.add_argument("--delay", type=float, default=1.0, help="Delay (in seconds) between incidents")
-    parser.add_argument("--use-lambda", action="store_true", help="Invoke Lambda directly instead of API Gateway")
-    parser.add_argument("--api-url", type=str, default=API_GATEWAY_URL, help="Override the default API Gateway URL")
-
+    parser.add_argument("--delay", type=float, default=2.0, help="Delay (in seconds) between incidents")
     args = parser.parse_args()
-    API_GATEWAY_URL = args.api_url
 
-    print("--- Starting Incident Simulation ---")
+    if "PASTE_YOUR_API_GATEWAY_URL_HERE" in API_GATEWAY_URL and not USE_LAMBDA_INVOKE:
+        print("\n[🚨 ERROR] Please update the 'API_GATEWAY_URL' variable in this script with your deployment output.")
+        exit(1)
+
+    lambda_client = boto3.client('lambda') if USE_LAMBDA_INVOKE else None
+
+    print("\n--- Starting OpsFlow Incident Simulation ---")
 
     for i in range(args.count):
-        incident = generate_incident()
+        generator_func = random.choice(incident_generators)
+        incident = generator_func()
 
-        if args.use_lambda or USE_LAMBDA_INVOKE:
-            if not lambda_client:
-                print("[!] Lambda client not initialized. Set USE_LAMBDA_INVOKE = True to enable.")
-                break
-            invoke_lambda_directly(incident)
+        if USE_LAMBDA_INVOKE:
+            invoke_lambda_directly(incident, lambda_client)
         else:
             send_incident_to_api(incident)
 
         if i < args.count - 1:
             time.sleep(args.delay)
 
-    print("--- Simulation Complete ---")
-
+    print("\n--- Simulation Complete ---")

@@ -15,8 +15,8 @@ export class InfraStack extends cdk.Stack {
     constructor(scope: Construct, id: string, props?: cdk.StackProps) {
         super(scope, id, props);
 
-        // --- PASTE YOUR SAGEMAKER ENDPOINT NAME HERE ---
-        const sagemakerEndpointName = 'opsflow-anomaly-detector-2025-10-14-17-24-31'; // <-- REPLACE THIS PLACEHOLDER
+        // --- UPDATED: Use the permanent, versioned endpoint name ---
+        const sagemakerEndpointName = 'opsflow-anomaly-detector-v1';
 
         // S3 bucket for storing artifacts
         const artifactBucket = new s3.Bucket(this, 'OpsFlowArtifactBucket', {
@@ -49,7 +49,7 @@ export class InfraStack extends cdk.Stack {
         // Lambda to normalize incoming alerts and push to SQS
         const alertNormalizerLambda = new NodejsFunction(this, 'AlertNormalizerFunction', {
             functionName: 'opsflow-alert-normalizer',
-            runtime: lambda.Runtime.NODEJS_18_X,
+            runtime: lambda.Runtime.NODEJS_20_X, // <-- BEST PRACTICE: Upgraded to latest LTS
             handler: 'handler',
             entry: path.join(__dirname, '../../lambdas/alert_normalizer/index.js'),
             projectRoot: path.join(__dirname, '../../'),
@@ -60,11 +60,11 @@ export class InfraStack extends cdk.Stack {
 
         opsQueue.grantSendMessages(alertNormalizerLambda);
 
-        // REST API endpoint to receive alerts (POST /alerts)
+        // REST API endpoint to receive alerts
         const api = new apigw.LambdaRestApi(this, 'OpsFlowAlertApi', {
             handler: alertNormalizerLambda,
             proxy: false,
-            description: 'API endpoint for ingesting alerts from synthetic generator'
+            description: 'API endpoint for ingesting alerts'
         });
 
         const alerts = api.root.addResource('alerts');
@@ -73,7 +73,7 @@ export class InfraStack extends cdk.Stack {
         // Define the detection Lambda function
         const detectionLambda = new NodejsFunction(this, 'DetectionFunction', {
             functionName: 'opsflow-detection',
-            runtime: lambda.Runtime.NODEJS_18_X,
+            runtime: lambda.Runtime.NODEJS_20_X, // <-- BEST PRACTICE: Upgraded to latest LTS
             handler: 'handler',
             entry: path.join(__dirname, '../../lambdas/detection/index.js'),
             projectRoot: path.join(__dirname, '../../'),
@@ -85,7 +85,7 @@ export class InfraStack extends cdk.Stack {
             timeout: cdk.Duration.seconds(30),
         });
 
-        incidentTable.grantWriteData(detectionLambda);
+        incidentTable.grantReadWriteData(detectionLambda);
 
         // Add permissions to invoke the SageMaker endpoint
         detectionLambda.addToRolePolicy(new iam.PolicyStatement({
@@ -97,17 +97,18 @@ export class InfraStack extends cdk.Stack {
         // Define the retriever Lambda
         const retrieverLambda = new NodejsFunction(this, 'RetrieverFunction', {
             functionName: 'opsflow-retriever',
-            runtime: lambda.Runtime.NODEJS_18_X,
+            runtime: lambda.Runtime.NODEJS_20_X, // <-- BEST PRACTICE: Upgraded to latest LTS
             handler: 'handler',
             entry: path.join(__dirname, '../../lambdas/retriever/index.js'),
             projectRoot: path.join(__dirname, '../../'),
             depsLockFilePath: path.join(__dirname, '../../package-lock.json'),
             bundling: {
-                format: OutputFormat.ESM,
-                externalModules: ['onnxruntime-node', 'sharp', '@aws-sdk/*'],
+                format: OutputFormat.ESM, // Kept as ESM for @xenova/transformers
+                externalModules: ['@aws-sdk/*'],
                 nodeModules: ['@xenova/transformers'],
                 commandHooks: {
                     beforeBundling(inputDir: string, outputDir: string): string[] {
+                        // This command is CRITICAL to include our data files in the Lambda package
                         return [`cp -r ${inputDir}/data ${outputDir}/`];
                     },
                     afterBundling(): string[] { return []; },
@@ -116,18 +117,18 @@ export class InfraStack extends cdk.Stack {
             },
             environment: {
                 TABLE_NAME: incidentTable.tableName,
-                TRANSFORMERS_CACHE: '/tmp/cache'
+                TRANSFORMERS_CACHE: '/tmp/cache' // Use writable temp directory for caching models
             },
             timeout: cdk.Duration.seconds(90),
             memorySize: 1024,
         });
 
-        incidentTable.grantWriteData(retrieverLambda);
+        incidentTable.grantReadWriteData(retrieverLambda);
 
         // Define the ingest processor Lambda
         const ingestProcessorLambda = new NodejsFunction(this, 'IngestProcessorFunction', {
             functionName: 'opsflow-ingest-processor',
-            runtime: lambda.Runtime.NODEJS_18_X,
+            runtime: lambda.Runtime.NODEJS_20_X, // <-- BEST PRACTICE: Upgraded to latest LTS
             handler: 'handler',
             entry: path.join(__dirname, '../../lambdas/ingest_processor/index.js'),
             projectRoot: path.join(__dirname, '../../'),
@@ -140,25 +141,19 @@ export class InfraStack extends cdk.Stack {
             timeout: cdk.Duration.seconds(30),
         });
 
-        incidentTable.grantWriteData(ingestProcessorLambda);
+        incidentTable.grantReadWriteData(ingestProcessorLambda);
         ingestProcessorLambda.addEventSource(new SqsEventSource(opsQueue));
 
+        // Grant the ingest processor permission to invoke the other lambdas
         detectionLambda.grantInvoke(ingestProcessorLambda);
         retrieverLambda.grantInvoke(ingestProcessorLambda);
 
-        // Outputs
-        new cdk.CfnOutput(this, 'S3BucketName', { value: artifactBucket.bucketName });
-        new cdk.CfnOutput(this, 'DynamoTableName', { value: incidentTable.tableName });
-        new cdk.CfnOutput(this, 'SnsTopicArn', { value: alertTopic.topicArn });
-        new cdk.CfnOutput(this, 'SqsQueueUrl', { value: opsQueue.queueUrl });
-        new cdk.CfnOutput(this, 'AlertNormalizerLambda', { value: alertNormalizerLambda.functionName });
-        new cdk.CfnOutput(this, 'IngestProcessorLambda', { value: ingestProcessorLambda.functionName });
-        new cdk.CfnOutput(this, 'DetectionLambda', { value: detectionLambda.functionName });
-        new cdk.CfnOutput(this, 'RetrieverLambda', { value: retrieverLambda.functionName });
+        // --- Outputs ---
         new cdk.CfnOutput(this, 'ApiGatewayUrl', {
-            value: api.url,
-            description: 'The base URL of the API Gateway. Use this URL + /alerts in your script.'
+            value: `${api.url}alerts`,
+            description: 'The full URL for POSTing alerts to the API Gateway.'
         });
+        new cdk.CfnOutput(this, 'DynamoTableName', { value: incidentTable.tableName });
+        new cdk.CfnOutput(this, 'SqsQueueUrl', { value: opsQueue.queueUrl });
     }
 }
-
