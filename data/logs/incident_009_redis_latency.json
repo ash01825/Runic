@@ -1,0 +1,12 @@
+{
+  "timestamp": "2025-10-16T13:00:00Z",
+  "service": "session-cache",
+  "level": "WARN",
+  "msg": "High latency on cache command",
+  "eventType": "LatencySpike",
+  "details": {
+    "command": "KEYS",
+    "pattern": "*",
+    "duration_ms": 150
+  }
+}

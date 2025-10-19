@@ -1,0 +1,11 @@
+{
+  "timestamp": "2025-10-14T04:35:00Z",
+  "service": "frontend-ui",
+  "level": "ERROR",
+  "msg": "Application startup failed due to DNS resolution failure",
+  "eventType": "Timeouts",
+  "details": {
+    "error": "Could not establish connection to backend service.",
+    "stackTrace": "java.net.UnknownHostException: payment-gateway.internal.opsflow.local: Temporary failure in name resolution\n    at java.net.Inet4AddressImpl.lookupAllHostAddr(Native Method)\n    at java.net.InetAddress$2.lookupAllHostAddr(InetAddress.java:928)"
+  }
+}

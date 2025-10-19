@@ -1,0 +1,13 @@
+{
+  "timestamp": "2025-10-16T14:00:00Z",
+  "service": "file-processor-lambda",
+  "level": "ERROR",
+  "msg": "Access denied when calling the PutObject operation",
+  "eventType": "AccessDenied",
+  "details": {
+    "errorCode": "AccessDeniedException",
+    "awsService": "S3",
+    "awsAction": "PutObject",
+    "resource": "arn:aws:s3:::opsflow-document-bucket/*"
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "timestamp": "2025-10-16T10:06:15Z",
+  "service": "payment-gateway",
+  "level": "WARN",
+  "msg": "High DB query latency detected",
+  "eventType": "LatencySpike",
+  "details": {
+    "dependency": "inventory-db",
+    "p99_latency_ms": 2105,
+    "threshold_ms": 1000,
+    "query_signature": "SELECT * FROM products WHERE category = ? AND in_stock = ?"
+  }
+}

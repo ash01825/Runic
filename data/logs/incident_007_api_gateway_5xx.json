@@ -1,0 +1,12 @@
+{
+  "timestamp": "2025-10-16T11:00:00Z",
+  "service": "api-gateway",
+  "level": "ERROR",
+  "msg": "Backend integration timed out",
+  "eventType": "ApiError",
+  "details": {
+    "endpoint": "/v1/checkout",
+    "httpStatus": 504,
+    "integrationLatency": 29500
+  }
+}

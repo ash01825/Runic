@@ -1,0 +1,13 @@
+{
+  "timestamp": "2025-10-16T10:06:03Z",
+  "service": "auth-service",
+  "level": "ERROR",
+  "msg": "High resource warning; triggering ResourceExhaustion event",
+  "eventType": "ResourceExhaustion",
+  "details": {
+    "cpu_utilization_percent": 94.3,
+    "p99_latency_ms": 2100,
+    "task_id": "b4a2e1f-8c7d",
+    "error": "Request processing time exceeded 5000ms"
+  }
+}
