@@ -5,9 +5,9 @@ import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as sns from 'aws-cdk-lib/aws-sns';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
-import { NodejsFunction, OutputFormat } from 'aws-cdk-lib/aws-lambda-nodejs';
+import { NodejsFunction, OutputFormat } from 'aws-cdk-lib/aws-lambda-nodejs'; // OutputFormat is needed
 import * as apigw from 'aws-cdk-lib/aws-apigateway';
-import { SqsEventSource } from 'aws-cdk-lib/aws-lambda-event-sources';
+import { SqsEventSource, DynamoEventSource } from 'aws-cdk-lib/aws-lambda-event-sources';
 import * as path from 'path';
 import * as iam from 'aws-cdk-lib/aws-iam';
 
@@ -15,41 +15,42 @@ export class InfraStack extends cdk.Stack {
     constructor(scope: Construct, id: string, props?: cdk.StackProps) {
         super(scope, id, props);
 
-        // --- UPDATED: Use the permanent, versioned endpoint name ---
         const sagemakerEndpointName = 'opsflow-anomaly-detector-v1';
+        const bedrockModelArn = `arn:aws:bedrock:${this.region}::foundation-model/meta.llama3-70b-instruct-v1:0`;
 
-        // S3 bucket for storing artifacts
+        // S3 bucket
         const artifactBucket = new s3.Bucket(this, 'OpsFlowArtifactBucket', {
             removalPolicy: cdk.RemovalPolicy.DESTROY,
             autoDeleteObjects: true,
             versioned: true,
         });
 
-        // DynamoDB table to store incident data
+        // DynamoDB table
         const incidentTable = new dynamodb.Table(this, 'OpsFlowIncidents', {
             tableName: 'OpsFlowIncidents',
             partitionKey: { name: 'incidentId', type: dynamodb.AttributeType.STRING },
             billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
             removalPolicy: cdk.RemovalPolicy.DESTROY,
+            stream: dynamodb.StreamViewType.NEW_AND_OLD_IMAGES, // Enable Stream
         });
 
-        // SNS topic for sending alerts
+        // SNS topic
         const alertTopic = new sns.Topic(this, 'OpsFlowAlertTopic', {
             topicName: 'opsflow-alerts',
             displayName: 'OpsFlow Alerts Topic',
         });
 
-        // SQS queue to handle alert messages
+        // SQS queue
         const opsQueue = new sqs.Queue(this, 'OpsFlowQueue', {
             queueName: 'opsflow-queue',
             visibilityTimeout: cdk.Duration.seconds(300),
             retentionPeriod: cdk.Duration.days(4),
         });
 
-        // Lambda to normalize incoming alerts and push to SQS
+        // alertNormalizerLambda
         const alertNormalizerLambda = new NodejsFunction(this, 'AlertNormalizerFunction', {
             functionName: 'opsflow-alert-normalizer',
-            runtime: lambda.Runtime.NODEJS_20_X, // <-- BEST PRACTICE: Upgraded to latest LTS
+            runtime: lambda.Runtime.NODEJS_20_X,
             handler: 'handler',
             entry: path.join(__dirname, '../../lambdas/alert_normalizer/index.js'),
             projectRoot: path.join(__dirname, '../../'),
@@ -60,7 +61,7 @@ export class InfraStack extends cdk.Stack {
 
         opsQueue.grantSendMessages(alertNormalizerLambda);
 
-        // REST API endpoint to receive alerts
+        // API Gateway
         const api = new apigw.LambdaRestApi(this, 'OpsFlowAlertApi', {
             handler: alertNormalizerLambda,
             proxy: false,
@@ -70,10 +71,10 @@ export class InfraStack extends cdk.Stack {
         const alerts = api.root.addResource('alerts');
         alerts.addMethod('POST');
 
-        // Define the detection Lambda function
+        // detectionLambda
         const detectionLambda = new NodejsFunction(this, 'DetectionFunction', {
             functionName: 'opsflow-detection',
-            runtime: lambda.Runtime.NODEJS_20_X, // <-- BEST PRACTICE: Upgraded to latest LTS
+            runtime: lambda.Runtime.NODEJS_20_X,
             handler: 'handler',
             entry: path.join(__dirname, '../../lambdas/detection/index.js'),
             projectRoot: path.join(__dirname, '../../'),
@@ -86,29 +87,25 @@ export class InfraStack extends cdk.Stack {
         });
 
         incidentTable.grantReadWriteData(detectionLambda);
-
-        // Add permissions to invoke the SageMaker endpoint
         detectionLambda.addToRolePolicy(new iam.PolicyStatement({
             actions: ['sagemaker:InvokeEndpoint'],
             resources: [`arn:aws:sagemaker:${this.region}:${this.account}:endpoint/${sagemakerEndpointName}`]
         }));
 
-
-        // Define the retriever Lambda
+        // retrieverLambda
         const retrieverLambda = new NodejsFunction(this, 'RetrieverFunction', {
             functionName: 'opsflow-retriever',
-            runtime: lambda.Runtime.NODEJS_20_X, // <-- BEST PRACTICE: Upgraded to latest LTS
+            runtime: lambda.Runtime.NODEJS_20_X,
             handler: 'handler',
             entry: path.join(__dirname, '../../lambdas/retriever/index.js'),
             projectRoot: path.join(__dirname, '../../'),
             depsLockFilePath: path.join(__dirname, '../../package-lock.json'),
             bundling: {
-                format: OutputFormat.ESM, // Kept as ESM for @xenova/transformers
+                format: OutputFormat.ESM, // <-- This one was already ESM
                 externalModules: ['@aws-sdk/*'],
                 nodeModules: ['@xenova/transformers'],
                 commandHooks: {
                     beforeBundling(inputDir: string, outputDir: string): string[] {
-                        // This command is CRITICAL to include our data files in the Lambda package
                         return [`cp -r ${inputDir}/data ${outputDir}/`];
                     },
                     afterBundling(): string[] { return []; },
@@ -117,7 +114,7 @@ export class InfraStack extends cdk.Stack {
             },
             environment: {
                 TABLE_NAME: incidentTable.tableName,
-                TRANSFORMERS_CACHE: '/tmp/cache' // Use writable temp directory for caching models
+                TRANSFORMERS_CACHE: '/tmp/cache'
             },
             timeout: cdk.Duration.seconds(90),
             memorySize: 1024,
@@ -125,10 +122,10 @@ export class InfraStack extends cdk.Stack {
 
         incidentTable.grantReadWriteData(retrieverLambda);
 
-        // Define the ingest processor Lambda
+        // ingestProcessorLambda
         const ingestProcessorLambda = new NodejsFunction(this, 'IngestProcessorFunction', {
             functionName: 'opsflow-ingest-processor',
-            runtime: lambda.Runtime.NODEJS_20_X, // <-- BEST PRACTICE: Upgraded to latest LTS
+            runtime: lambda.Runtime.NODEJS_20_X,
             handler: 'handler',
             entry: path.join(__dirname, '../../lambdas/ingest_processor/index.js'),
             projectRoot: path.join(__dirname, '../../'),
@@ -143,10 +140,74 @@ export class InfraStack extends cdk.Stack {
 
         incidentTable.grantReadWriteData(ingestProcessorLambda);
         ingestProcessorLambda.addEventSource(new SqsEventSource(opsQueue));
-
-        // Grant the ingest processor permission to invoke the other lambdas
         detectionLambda.grantInvoke(ingestProcessorLambda);
         retrieverLambda.grantInvoke(ingestProcessorLambda);
+
+        // --- UPDATED: Planner "Brain" Lambda ---
+        const plannerLambda = new NodejsFunction(this, 'PlannerFunction', {
+            functionName: 'opsflow-planner',
+            runtime: lambda.Runtime.NODEJS_20_X,
+            handler: 'handler',
+            entry: path.join(__dirname, '../../planner/index.js'),
+            projectRoot: path.join(__dirname, '../../'),
+            depsLockFilePath: path.join(__dirname, '../../package-lock.json'),
+            bundling: {
+                format: OutputFormat.ESM, // --- THIS IS THE FIX ---
+                commandHooks: {
+                    beforeBundling(inputDir: string, outputDir: string): string[] {
+                        return [`cp ${inputDir}/planner/prompt_template.md ${outputDir}/`];
+                    },
+                    afterBundling(): string[] { return []; },
+                    beforeInstall() { return []; }
+                },
+                nodeModules: [ // Dependencies are in root package.json
+                    '@aws-sdk/client-bedrock-runtime',
+                    '@aws-sdk/client-dynamodb',
+                    '@aws-sdk/lib-dynamodb',
+                ],
+            },
+            environment: {
+                TABLE_NAME: incidentTable.tableName,
+                MODEL_ID: 'meta.llama3-70b-instruct-v1:0', // Update here too
+            },
+            timeout: cdk.Duration.seconds(90),
+            memorySize: 512,
+        });
+
+        incidentTable.grantReadWriteData(plannerLambda);
+        plannerLambda.addToRolePolicy(new iam.PolicyStatement({
+            actions: ['bedrock:InvokeModel'],
+            resources: [bedrockModelArn]
+        }));
+
+        // --- UPDATED: Planner Trigger Lambda ---
+        const plannerTriggerLambda = new NodejsFunction(this, 'PlannerTriggerFunction', {
+            functionName: 'opsflow-planner-trigger',
+            runtime: lambda.Runtime.NODEJS_20_X,
+            handler: 'handler',
+            entry: path.join(__dirname, '../../lambdas/planner_trigger/index.js'),
+            projectRoot: path.join(__dirname, '../../'),
+            depsLockFilePath: path.join(__dirname, '../../package-lock.json'),
+            bundling: {
+                format: OutputFormat.ESM, // --- THIS IS THE FIX ---
+                nodeModules: [ // Dependencies are in root package.json
+                    '@aws-sdk/client-lambda',
+                    '@aws-sdk/util-dynamodb'
+                ],
+            },
+            environment: {
+                TABLE_NAME: incidentTable.tableName,
+                PLANNER_LAMBDA_NAME: plannerLambda.functionName,
+            },
+            timeout: cdk.Duration.seconds(30),
+        });
+
+        plannerLambda.grantInvoke(plannerTriggerLambda);
+        plannerTriggerLambda.addEventSource(new DynamoEventSource(incidentTable, {
+            startingPosition: lambda.StartingPosition.LATEST,
+            batchSize: 5,
+        }));
+
 
         // --- Outputs ---
         new cdk.CfnOutput(this, 'ApiGatewayUrl', {

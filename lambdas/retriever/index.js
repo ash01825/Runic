@@ -3,10 +3,16 @@ import { DynamoDBDocumentClient, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { pipeline } from '@xenova/transformers';
 import fs from 'fs';
 import path from 'path';
-// The incorrect 'import re from "re";' line has been removed.
+import { fileURLToPath } from 'url';
+import { dirname } from 'path';
+
+// --- ES Module Path Fix ---
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 const REGION = process.env.AWS_REGION;
 const TABLE_NAME = process.env.TABLE_NAME;
+const MAX_SNIPPET_LENGTH = 500; // --- NEW: Limit snippet length ---
 
 const ddbClient = new DynamoDBClient({ region: REGION });
 const docClient = DynamoDBDocumentClient.from(ddbClient);
@@ -20,7 +26,6 @@ function parseAndChunkMarkdown(doc) {
     let currentChunkLines = [];
 
     for (const line of lines) {
-        // This is the correct JavaScript way to use a regular expression
         const headerMatch = line.match(/^##\s+(.*)/);
         if (headerMatch) {
             if (currentChunkLines.length > 0) {
@@ -30,8 +35,8 @@ function parseAndChunkMarkdown(doc) {
                     content: currentChunkLines.join('\n').trim()
                 });
             }
-            currentSection = headerMatch[1].replace(/^[^\w\s]+/, '').trim(); // Strip leading emojis/symbols
-            currentChunkLines = [line]; // Start new chunk with its header
+            currentSection = headerMatch[1].replace(/^[^\w\s]+/, '').trim();
+            currentChunkLines = [line];
         } else if (line.trim()) {
             currentChunkLines.push(line);
         }
@@ -64,7 +69,9 @@ class RetrieverSingleton {
     static async getInstance() {
         if (!this.instance) {
             console.log("COLD START: Initializing model and loading documents...");
-            const extractor = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2', { cache_dir: '/tmp/transformers_cache' });
+            // Use path.resolve with __dirname to ensure correct path
+            const modelCacheDir = path.resolve('/tmp', 'transformers_cache');
+            const extractor = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2', { cache_dir: modelCacheDir });
 
             const docs = this.loadDocumentsFromDisk();
             const chunks = docs.flatMap(doc => doc.name.endsWith('.md') ? parseAndChunkMarkdown(doc) : chunkGenericText(doc));
@@ -77,45 +84,87 @@ class RetrieverSingleton {
     }
 
     static loadDocumentsFromDisk() {
-        const docPath = path.join(process.cwd(), 'data');
+        // Use path.resolve and __dirname to make sure we find the 'data' folder
+        // relative to the *Lambda file's location* after bundling
+        const docPath = path.resolve(__dirname, 'data'); // <-- FIX: Use resolved path
+        console.log(`Attempting to load documents from: ${docPath}`); // Debug log
         const documents = [];
-        for (const subdir of ['logs', 'runbooks']) {
-            const files = fs.readdirSync(path.join(docPath, subdir));
-            for (const file of files) {
-                documents.push({
-                    name: file,
-                    content: fs.readFileSync(path.join(docPath, subdir, file), 'utf-8')
-                });
+        try {
+            for (const subdir of ['logs', 'runbooks']) {
+                const subDirPath = path.join(docPath, subdir);
+                if (!fs.existsSync(subDirPath)) {
+                    console.warn(`Subdirectory not found: ${subDirPath}`);
+                    continue; // Skip if subdir doesn't exist
+                }
+                const files = fs.readdirSync(subDirPath);
+                for (const file of files) {
+                    const filePath = path.join(subDirPath, file);
+                    try {
+                        documents.push({
+                            name: file,
+                            content: fs.readFileSync(filePath, 'utf-8')
+                        });
+                    } catch (readErr) {
+                        console.error(`Error reading file ${filePath}:`, readErr);
+                    }
+                }
             }
+            console.log(`Successfully loaded ${documents.length} documents.`); // Debug log
+        } catch (listErr) {
+            console.error(`Error listing files in ${docPath}:`, listErr);
         }
         return documents;
     }
 
+
     static async embedChunks(extractor, chunks) {
-        // Add section context to the content before embedding for better results
         const contents = chunks.map(c => `Section: ${c.section}. Content: ${c.content}`);
-        return (await extractor(contents, { pooling: 'mean', normalize: true })).tolist();
+        // Handle potential errors during embedding
+        try {
+            const output = await extractor(contents, { pooling: 'mean', normalize: true });
+            // Check if tolist is available (depends on Xenova version/output)
+            return typeof output.tolist === 'function' ? output.tolist() : Array.from(output.data);
+        } catch (embedErr) {
+            console.error("Error during embedding:", embedErr);
+            throw embedErr; // Re-throw to be caught by handler
+        }
     }
 }
 
 // --- LAMBDA HANDLER ---
 
 export const handler = async (event) => {
-    console.log(`Received retriever event for incident: ${event.incidentId}`);
+    console.log(`Received retriever event for incident: ${event.incidentId}`, JSON.stringify(event, null, 2)); // Log full event
     const { incidentId, message, service } = event;
 
-    if (!incidentId || !message || !service) {
-        console.error("Fatal: Missing incidentId, message, or service from payload.", event);
+    // --- IMPROVED INPUT VALIDATION ---
+    // The message might be nested differently after alertNormalizer changes
+    const actualMessage = message || event.rawPayload?.message || event.rawPayload?.msg?.S || event.rawPayload?.reason?.S || "Missing message";
+    const actualService = service || event.rawPayload?.service || event.rawPayload?.serviceName?.S || "unknown-service";
+
+
+    if (!incidentId || !actualMessage) { // Service is less critical for the query
+        console.error("Fatal: Missing incidentId or message from payload.", event);
+        // Update DDB with failure status
+        await updateDynamoDBWithError(incidentId, "Missing incidentId or message");
         return;
     }
 
     try {
+        console.log("Getting retriever singleton instance...");
         const { extractor, chunks, embeddings } = await RetrieverSingleton.getInstance();
+        console.log("Singleton instance retrieved.");
 
-        const query = `Service: ${service}. Incident message: ${message}`;
+
+        const query = `Service: ${actualService}. Incident message: ${actualMessage}`;
+        console.log(`Generating embedding for query: "${query}"`);
         const queryEmbedding = await extractor(query, { pooling: 'mean', normalize: true });
-        const queryVector = queryEmbedding.tolist()[0];
+        // Adjust based on actual output structure if needed
+        const queryVector = typeof queryEmbedding.tolist === 'function' ? queryEmbedding.tolist()[0] : Array.from(queryEmbedding.data);
+        console.log("Query embedding generated.");
 
+
+        console.log("Calculating similarities...");
         const similarities = embeddings.map((docEmbedding, i) => ({
             index: i,
             score: cosineSimilarity(queryVector, docEmbedding)
@@ -123,12 +172,15 @@ export const handler = async (event) => {
 
         similarities.sort((a, b) => b.score - a.score);
         const topK = similarities.slice(0, 3);
+        console.log(`Top ${topK.length} documents found.`);
+
 
         const retrievedContext = topK.map(item => ({
             document: chunks[item.index].parentDoc,
             section: chunks[item.index].section,
             score: item.score,
-            contentSnippet: chunks[item.index].content
+            // --- NEW: Truncate snippet ---
+            contentSnippet: chunks[item.index].content.substring(0, MAX_SNIPPET_LENGTH) + (chunks[item.index].content.length > MAX_SNIPPET_LENGTH ? '...' : '')
         }));
 
         const command = new UpdateCommand({
@@ -147,14 +199,39 @@ export const handler = async (event) => {
             }
         });
 
+        console.log(`Attempting to update DynamoDB for incident ${incidentId}...`);
         await docClient.send(command);
-        console.log(`Successfully retrieved context for incident ${incidentId}`, { topDocs: retrievedContext.map(d => `${d.document} (${d.section})`) });
+        // --- MOVED SUCCESS LOG ---
+        console.log(`Successfully retrieved context AND updated DynamoDB for incident ${incidentId}`, { topDocs: retrievedContext.map(d => `${d.document} (${d.section})`) });
 
     } catch (err) {
         console.error('--- CRITICAL RETRIEVER ERROR ---', {
-            error: err.message,
+            error: err.message || JSON.stringify(err), // Log full error object if no message
             stack: err.stack,
-            incidentId: event.incidentId
+            incidentId: incidentId // Use the validated incidentId
         });
+        // Attempt to update DDB with failure status
+        await updateDynamoDBWithError(incidentId, err.message || "Unknown retriever error");
     }
 };
+
+// --- NEW: Helper to update DDB on error ---
+async function updateDynamoDBWithError(incidentId, errorMessage) {
+    if (!incidentId) return; // Can't update if no ID
+    try {
+        const errorUpdateCommand = new UpdateCommand({
+            TableName: TABLE_NAME,
+            Key: { incidentId },
+            UpdateExpression: 'SET #status = :status, #error = :error',
+            ExpressionAttributeNames: { '#status': 'status', '#error': 'error' },
+            ExpressionAttributeValues: {
+                ':status': 'RETRIEVAL_FAILED',
+                ':error': errorMessage.substring(0, 500), // Limit error message size
+            },
+        });
+        await docClient.send(errorUpdateCommand);
+        console.log(`Updated DynamoDB status to RETRIEVAL_FAILED for ${incidentId}`);
+    } catch (ddbError) {
+        console.error(`Failed to update DynamoDB with error status for ${incidentId}:`, ddbError);
+    }
+}
