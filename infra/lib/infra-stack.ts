@@ -10,6 +10,7 @@ import * as apigw from 'aws-cdk-lib/aws-apigateway';
 import { SqsEventSource, DynamoEventSource } from 'aws-cdk-lib/aws-lambda-event-sources';
 import * as path from 'path';
 import * as iam from 'aws-cdk-lib/aws-iam';
+import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 
 export class InfraStack extends cdk.Stack {
     constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -207,6 +208,48 @@ export class InfraStack extends cdk.Stack {
             startingPosition: lambda.StartingPosition.LATEST,
             batchSize: 5,
         }));
+
+        // ... after plannerTriggerLambda ...
+
+        // =================================================================
+        // --- WEEK 3: ADAPTERS ---
+        // =================================================================
+
+        // --- GitHub Adapter ---
+
+        // 1. Get a reference to the existing secret we created in the console
+        const githubSecret = secretsmanager.Secret.fromSecretAttributes(this, 'OpsFlowGitHubSecret', {
+            // Use secretCompleteArn as we are pasting the full ARN from the console
+            secretCompleteArn: 'arn:aws:secretsmanager:ap-south-1:712672311489:secret:opsflow/github_token-xkHyrv', // <-- PASTE YOUR ARN HERE
+        });
+
+        // 2. Define the Lambda function
+        const githubAdapterLambda = new NodejsFunction(this, 'GitHubAdapterFunction', {
+            functionName: 'opsflow-adapter-github',
+            runtime: lambda.Runtime.NODEJS_20_X,
+            handler: 'handler',
+            entry: path.join(__dirname, '../../lambdas/adapters/githubAdapter/index.js'),
+
+            // --- Bundling config ---
+            projectRoot: path.join(__dirname, '../../'), // Use root package.json for workspace
+            depsLockFilePath: path.join(__dirname, '../../lambdas/adapters/githubAdapter/package-lock.json'), // Use adapter's lockfile
+            bundling: {
+                format: OutputFormat.ESM,
+                externalModules: ['@aws-sdk/*'], // Already in Lambda runtime
+            },
+
+            environment: {
+                GITHUB_SECRET_ARN: githubSecret.secretArn,
+            },
+            timeout: cdk.Duration.seconds(30),
+        });
+
+        // 3. Grant the new Lambda permission to read *only* this secret
+        githubSecret.grantRead(githubAdapterLambda);
+
+
+        // --- Outputs ---
+        // ...
 
 
         // --- Outputs ---
